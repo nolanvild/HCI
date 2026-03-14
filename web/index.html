@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Agent Interface - Real-time Interactive</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+
+  <body>
+    <div class="main-container">
+      <!-- Conversation Panel -->
+      <div class="conversation-panel">
+        <div class="panel-header">
+          <h1>AI Conversation</h1>
+          <div class="connection-status">
+            <div class="status-indicator" id="connectionStatus"></div>
+            <span id="connectionText">Disconnected</span>
+          </div>
+        </div>
+
+        <!-- Messages Display -->
+        <div class="messages-container" id="messagesContainer">
+          <div class="message system">
+            <div class="message-content">
+              Welcome! Connect to start a conversation. You can:
+              <ul>
+                <li>Type text in the input field</li>
+                <li>Record audio from your microphone</li>
+                <li>Capture images from your camera</li>
+                <li>Share all of the above in a continuous conversation</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <!-- Input Area -->
+        <div class="input-area">
+          <div class="text-input-container">
+            <input
+              type="text"
+              id="textInput"
+              class="text-input"
+              placeholder="Type or speak... Click Start to begin recording audio"
+              disabled
+            />
+            <button id="sendBtn" class="send-btn" disabled>Send</button>
+          </div>
+
+          <!-- Connection Controls -->
+          <div class="connection-controls">
+            <button id="connectBtn" class="connect-btn">Connect</button>
+            <button id="resetBtn" class="reset-btn" disabled>
+              Reset Conversation
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Interaction Panel -->
+      <div class="interaction-panel">
+        <!-- Camera Section -->
+        <div class="camera-section">
+          <h2>Camera & Audio</h2>
+          <video id="videoPreview" playsinline autoplay></video>
+          <div class="control-section">
+            <button id="captureBtn" class="capture-btn">Start</button>
+            <div class="indicator" id="recordingIndicator"></div>
+          </div>
+          <div class="status-text" id="statusText">Ready to capture</div>
+        </div>
+
+        <!-- Latest Media Display -->
+        <div class="latest-media" id="latestMediaSection" style="display: none">
+          <h2>Latest Capture</h2>
+          <div id="latestMediaContainer"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Media History Modal (collapsible) -->
+    <div class="media-history" id="mediaHistory">
+      <div class="history-header">
+        <h3>Media History</h3>
+        <button class="toggle-history" id="toggleHistory">►</button>
+      </div>
+      <div class="history-content" id="historyContent" style="display: none">
+        <div id="imagesGrid"></div>
+      </div>
+    </div>
+
+    <script src="script.js"></script>
+  </body>
+</html>
