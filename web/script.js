@@ -1,27 +1,23 @@
 /**
- * Real-time AI Agent Interface
- * Handles WebSocket communication, media capture, and conversation streaming
+ * Real-time AI Agent Interface - Unified Multi-Modal Capture
+ * Single button captures image + audio simultaneously
+ * Text input combined with media and sent to AI
  */
 
 // ==================== DOM ELEMENTS ====================
 const messagesContainer = document.getElementById("messagesContainer");
 const textInput = document.getElementById("textInput");
-const sendBtn = document.getElementById("sendBtn");
+const captureBtn = document.getElementById("captureBtn");
+const captureStatus = document.getElementById("captureStatus");
 const connectBtn = document.getElementById("connectBtn");
 const resetBtn = document.getElementById("resetBtn");
 const connectionStatus = document.getElementById("connectionStatus");
 const connectionText = document.getElementById("connectionText");
+const loadingIndicator = document.getElementById("loadingIndicator");
 
 const videoPreview = document.getElementById("videoPreview");
-const captureBtn = document.getElementById("captureBtn");
 const recordingIndicator = document.getElementById("recordingIndicator");
 const statusText = document.getElementById("statusText");
-const latestMediaSection = document.getElementById("latestMediaSection");
-const latestMediaContainer = document.getElementById("latestMediaContainer");
-const imagesGrid = document.getElementById("imagesGrid");
-const mediaHistory = document.getElementById("mediaHistory");
-const toggleHistory = document.getElementById("toggleHistory");
-const historyContent = document.getElementById("historyContent");
 
 // ==================== STATE ====================
 let ws = null;
@@ -31,7 +27,7 @@ let isRecording = false;
 let audioChunks = [];
 let currentImageData = null;
 let isConnected = false;
-let capturedImages = [];
+let captureInterval = null;
 
 // ==================== INITIALIZATION ====================
 async function initializeCamera() {
@@ -41,11 +37,11 @@ async function initializeCamera() {
       audio: false,
     });
     videoPreview.srcObject = stream;
-    statusText.textContent = "Camera ready";
+    statusText.textContent = "Ready";
+    captureBtn.disabled = false;
   } catch (error) {
     console.error("Error accessing camera:", error);
-    statusText.textContent =
-      "Error: Could not access camera. Please check permissions.";
+    statusText.textContent = "Error: Camera access denied";
     captureBtn.disabled = true;
   }
 }
@@ -64,21 +60,33 @@ function connectWebSocket() {
     isConnected = true;
     updateConnectionStatus(true);
     textInput.disabled = false;
-    sendBtn.disabled = false;
+    captureBtn.disabled = false;
     resetBtn.disabled = false;
     connectBtn.textContent = "Disconnect";
     connectBtn.classList.add("connected");
-    addSystemMessage("Connected to AI. Ready to chat!");
+    addSystemMessage("Connected to AI");
   };
 
   ws.onmessage = (event) => {
-    const data = JSON.parse(event.data);
-    handleWebSocketMessage(data);
+    try {
+      // Handle both JSON and plain text messages
+      let data;
+      try {
+        data = JSON.parse(event.data);
+      } catch (e) {
+        // If not JSON, treat as plain text status message
+        console.warn("Received non-JSON message:", event.data);
+        data = { type: "status", content: event.data };
+      }
+      handleWebSocketMessage(data);
+    } catch (error) {
+      console.error("Error processing WebSocket message:", error);
+    }
   };
 
   ws.onerror = (error) => {
     console.error("WebSocket error:", error);
-    addSystemMessage("Connection error: " + error);
+    addSystemMessage("Connection error");
   };
 
   ws.onclose = () => {
@@ -86,7 +94,7 @@ function connectWebSocket() {
     isConnected = false;
     updateConnectionStatus(false);
     textInput.disabled = true;
-    sendBtn.disabled = true;
+    captureBtn.disabled = true;
     resetBtn.disabled = true;
     connectBtn.textContent = "Connect";
     connectBtn.classList.remove("connected");
@@ -129,69 +137,68 @@ function handleWebSocketMessage(data) {
 
   switch (type) {
     case "response":
-      // Streaming response from AI
+      // Hide loading indicator on first response
+      hideLoadingIndicator();
       addAssistantMessageToken(content);
       break;
-
     case "status":
       addSystemMessage(content);
       break;
-
     case "error":
+      hideLoadingIndicator();
       addSystemMessage(`Error: ${content}`);
       break;
-
     default:
       console.warn("Unknown message type:", type);
   }
+}
+
+// ==================== LOADING INDICATOR ====================
+function showLoadingIndicator() {
+  loadingIndicator.style.display = "flex";
+  scrollToBottom();
+}
+
+function hideLoadingIndicator() {
+  loadingIndicator.style.display = "none";
 }
 
 // ==================== MESSAGE DISPLAY ====================
 function addUserMessage(text) {
   const messageDiv = document.createElement("div");
   messageDiv.className = "message user";
-
   const contentDiv = document.createElement("div");
   contentDiv.className = "message-content";
   contentDiv.textContent = text;
-
   messageDiv.appendChild(contentDiv);
   messagesContainer.appendChild(messageDiv);
   scrollToBottom();
 }
 
 function addAssistantMessageToken(token) {
-  // Get or create the last assistant message
   let lastMessage = messagesContainer.lastElementChild;
 
   if (!lastMessage || !lastMessage.classList.contains("assistant")) {
-    // Create new assistant message
     lastMessage = document.createElement("div");
     lastMessage.className = "message assistant";
-
     const contentDiv = document.createElement("div");
     contentDiv.className = "message-content streaming";
     contentDiv.textContent = "";
-
     lastMessage.appendChild(contentDiv);
     messagesContainer.appendChild(lastMessage);
   }
 
-  // Append token to content
   const contentDiv = lastMessage.querySelector(".message-content");
   contentDiv.textContent += token;
-
   scrollToBottom();
 }
 
 function addSystemMessage(text) {
   const messageDiv = document.createElement("div");
   messageDiv.className = "message system";
-
   const contentDiv = document.createElement("div");
   contentDiv.className = "message-content";
   contentDiv.textContent = text;
-
   messageDiv.appendChild(contentDiv);
   messagesContainer.appendChild(messageDiv);
   scrollToBottom();
@@ -201,31 +208,9 @@ function scrollToBottom() {
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
 
-// ==================== TEXT INPUT & SENDING ====================
-sendBtn.addEventListener("click", sendText);
-textInput.addEventListener("keypress", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    sendText();
-  }
-});
+// ==================== UNIFIED CAPTURE SYSTEM ====================
 
-function sendText() {
-  const text = textInput.value.trim();
-  if (!text) return;
-
-  if (!isConnected) {
-    alert("Not connected. Please connect first.");
-    return;
-  }
-
-  addUserMessage(text);
-  sendWebSocketMessage("text", text);
-  textInput.value = "";
-  textInput.focus();
-}
-
-// ==================== CAMERA & AUDIO CAPTURE ====================
+// Capture image from video
 function captureImage() {
   const canvas = document.createElement("canvas");
   canvas.width = videoPreview.videoWidth;
@@ -235,6 +220,7 @@ function captureImage() {
   return canvas.toDataURL("image/jpeg");
 }
 
+// Start audio recording
 async function startAudioRecording() {
   try {
     const audioStream = await navigator.mediaDevices.getUserMedia({
@@ -247,34 +233,36 @@ async function startAudioRecording() {
       audioChunks.push(event.data);
     };
 
-    mediaRecorder.onstop = async () => {
-      const audioBlob = new Blob(audioChunks, { type: "audio/wav" });
-      await processAudioRecording(audioBlob);
-    };
-
     mediaRecorder.start();
     isRecording = true;
     return true;
   } catch (error) {
     console.error("Error starting audio recording:", error);
-    statusText.textContent = "Error: Could not access microphone.";
+    statusText.textContent = "Microphone access denied";
     return false;
   }
 }
 
+// Stop audio recording and get the blob
 function stopAudioRecording() {
-  if (mediaRecorder && isRecording) {
-    mediaRecorder.stop();
-    isRecording = false;
-    mediaRecorder.stream.getTracks().forEach((track) => track.stop());
-  }
+  return new Promise((resolve) => {
+    if (mediaRecorder && isRecording) {
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(audioChunks, { type: "audio/wav" });
+        isRecording = false;
+        mediaRecorder.stream.getTracks().forEach((track) => track.stop());
+        resolve(audioBlob);
+      };
+      mediaRecorder.stop();
+    } else {
+      resolve(null);
+    }
+  });
 }
 
-async function processAudioRecording(audioBlob) {
-  // Send to server for transcription
+// Transcribe audio
+async function transcribeAudio(audioBlob) {
   try {
-    statusText.textContent = "Transcribing audio...";
-
     const formData = new FormData();
     formData.append("file", audioBlob, "recording.wav");
 
@@ -288,155 +276,100 @@ async function processAudioRecording(audioBlob) {
     }
 
     const data = await response.json();
-    const transcript = data.transcript;
-
-    statusText.textContent = `Transcribed: ${transcript.substring(0, 50)}...`;
-
-    // Send transcript to AI
-    const audioUrl = URL.createObjectURL(audioBlob);
-    addMediaToLatest(currentImageData, audioUrl, transcript);
-
-    // Send to WebSocket
-    if (isConnected && transcript.trim()) {
-      sendWebSocketMessage("transcript", transcript);
-    }
+    return data.transcript || "";
   } catch (error) {
-    console.error("Error processing audio:", error);
-    statusText.textContent = "Error: Could not transcribe audio.";
+    console.error("Error transcribing audio:", error);
+    return "";
   }
 }
 
-// ==================== MEDIA DISPLAY ====================
-function addMediaToLatest(imageData, audioUrl, transcript) {
-  latestMediaSection.style.display = "block";
-  latestMediaContainer.innerHTML = "";
-
-  const container = document.createElement("div");
-  container.style.display = "flex";
-  container.style.gap = "12px";
-
-  // Image
-  if (imageData) {
-    const img = document.createElement("img");
-    img.src = imageData;
-    img.style.cssText =
-      "width: 80px; height: 80px; border-radius: 6px; object-fit: cover;";
-    container.appendChild(img);
-
-    // Send image to WebSocket
-    if (isConnected) {
-      sendWebSocketMessage("image", imageData);
-    }
-  }
-
-  // Audio and transcript
-  const audioSection = document.createElement("div");
-  audioSection.style.flex = "1";
-
-  if (audioUrl) {
-    const audio = document.createElement("audio");
-    audio.src = audioUrl;
-    audio.controls = true;
-    audio.style.width = "100%";
-    audioSection.appendChild(audio);
-  }
-
-  if (transcript) {
-    const label = document.createElement("div");
-    label.style.cssText = "font-size: 11px; color: #667eea; margin-top: 8px;";
-    label.textContent = "TRANSCRIPT";
-
-    const text = document.createElement("div");
-    text.style.cssText =
-      "font-size: 12px; color: #555; background: #fafafa; padding: 8px; border-radius: 4px; border-left: 2px solid #667eea; margin-top: 4px;";
-    text.textContent = transcript;
-
-    audioSection.appendChild(label);
-    audioSection.appendChild(text);
-  }
-
-  container.appendChild(audioSection);
-  latestMediaContainer.appendChild(container);
-
-  // Also add to history
-  addMediaToGallery(imageData, audioUrl, transcript);
-}
-
-function addMediaToGallery(imageData, audioUrl, transcript = null) {
-  const captureItem = document.createElement("div");
-  captureItem.className = "capture-item";
-
-  // Small image
-  if (imageData) {
-    const img = document.createElement("img");
-    img.src = imageData;
-    img.className = "captured-image";
-    img.title = `Captured at ${new Date().toLocaleTimeString()}`;
-    captureItem.appendChild(img);
-  }
-
-  // Audio and transcript
-  const audioContainer = document.createElement("div");
-  audioContainer.className = "capture-audio";
-
-  if (audioUrl) {
-    const audio = document.createElement("audio");
-    audio.src = audioUrl;
-    audio.controls = true;
-    audio.className = "audio-player";
-    audioContainer.appendChild(audio);
-  }
-
-  const timestamp = document.createElement("div");
-  timestamp.className = "audio-timestamp";
-  timestamp.textContent = `${new Date().toLocaleTimeString()}`;
-  audioContainer.appendChild(timestamp);
-
-  if (transcript) {
-    const section = document.createElement("div");
-    section.className = "transcript-section";
-
-    const label = document.createElement("div");
-    label.className = "transcript-label";
-    label.textContent = "Transcript";
-
-    const text = document.createElement("div");
-    text.className = "transcript-text";
-    text.textContent = transcript;
-
-    section.appendChild(label);
-    section.appendChild(text);
-    audioContainer.appendChild(section);
-  }
-
-  captureItem.appendChild(audioContainer);
-  imagesGrid.insertBefore(captureItem, imagesGrid.firstChild);
-
-  capturedImages.push({ imageData, audioUrl, transcript });
-}
-
-// ==================== CAPTURE BUTTON LOGIC ====================
+// UNIFIED CAPTURE BUTTON HANDLER
 captureBtn.addEventListener("click", async () => {
   if (!isRecording) {
-    // Start
+    // ===== START CAPTURE =====
+    if (!isConnected) {
+      addSystemMessage("Not connected. Please connect first.");
+      return;
+    }
+
     try {
+      // Start capturing image and audio
       currentImageData = captureImage();
       const success = await startAudioRecording();
+
       if (success) {
-        captureBtn.textContent = "Stop Recording";
-        recordingIndicator.classList.add("recording");
-        statusText.textContent = "Recording audio...";
+        isRecording = true;
+        captureBtn.textContent = "Stop & Send";
+        captureBtn.classList.add("recording");
+        recordingIndicator.classList.add("active");
+        captureStatus.textContent = "Recording...";
+        statusText.textContent = "Recording - type a message and click Stop";
+        textInput.focus();
       }
     } catch (error) {
-      console.error("Error capturing:", error);
-      statusText.textContent = "Error: Could not start capture.";
+      console.error("Error starting capture:", error);
+      statusText.textContent = "Error starting capture";
     }
   } else {
-    // Stop
-    stopAudioRecording();
-    captureBtn.textContent = "Start";
-    recordingIndicator.classList.remove("recording");
-    statusText.textContent = "Recording stopped";
+    // ===== STOP CAPTURE & SEND =====
+    captureBtn.disabled = true;
+    captureStatus.textContent = "Processing...";
+
+    try {
+      // Stop audio recording
+      const audioBlob = await stopAudioRecording();
+
+      // Transcribe audio
+      statusText.textContent = "Transcribing...";
+      const transcript = await transcribeAudio(audioBlob);
+
+      // Get text input
+      const textMessage = textInput.value.trim();
+
+      // Combine all inputs
+      let allInputs = [];
+      if (currentImageData) allInputs.push("(image captured)");
+      if (transcript) allInputs.push(`Transcript: ${transcript}`);
+      if (textMessage) allInputs.push(textMessage);
+
+      const combinedMessage = allInputs.join(" ");
+
+      // Send everything to AI
+      if (combinedMessage) {
+        addUserMessage(combinedMessage);
+        showLoadingIndicator();
+
+        // Send image if captured
+        if (currentImageData) {
+          sendWebSocketMessage("image", currentImageData);
+        }
+
+        // Send transcript if available
+        if (transcript) {
+          sendWebSocketMessage("transcript", transcript);
+        }
+
+        // Send text message if available
+        if (textMessage) {
+          sendWebSocketMessage("text", textMessage);
+        }
+      }
+
+      // Reset UI
+      isRecording = false;
+      captureBtn.textContent = "Start Capture";
+      captureBtn.classList.remove("recording");
+      recordingIndicator.classList.remove("active");
+      captureStatus.textContent = "Ready";
+      statusText.textContent = "Ready";
+      textInput.value = "";
+      textInput.focus();
+      captureBtn.disabled = false;
+    } catch (error) {
+      console.error("Error stopping capture:", error);
+      statusText.textContent = "Error processing capture";
+      captureBtn.disabled = false;
+    }
   }
 });
 
@@ -457,13 +390,10 @@ resetBtn.addEventListener("click", () => {
   }
 });
 
-// ==================== MEDIA HISTORY TOGGLE ====================
-toggleHistory.addEventListener("click", () => {
-  if (historyContent.style.display === "none") {
-    historyContent.style.display = "block";
-    toggleHistory.classList.add("expanded");
-  } else {
-    historyContent.style.display = "none";
-    toggleHistory.classList.remove("expanded");
+// Allow Enter key in text input to send (when not capturing)
+textInput.addEventListener("keypress", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && isRecording) {
+    // If capturing, just let them type normally
+    return;
   }
 });

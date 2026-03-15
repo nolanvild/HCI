@@ -10,11 +10,13 @@ import base64
 from typing import AsyncIterator, Optional, List
 from io import BytesIO
 from PIL import Image
+import os
 
 logger = logging.getLogger(__name__)
 
 # Ollama API endpoint (running locally)
-OLLAMA_BASE_URL = "http://localhost:11434"
+# Try to find Ollama, check common installation paths
+OLLAMA_BASE_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 
 # Model selection - LLaVA for vision capabilities
 MODEL_NAME = (

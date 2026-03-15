@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import logging
 from speech import transcribe_audio, get_progress
-from ollama_client import get_ollama_client
+from context import initialize_ai_connection, shutdown_ai_connection, get_ai_client
 import os
 from dotenv import load_dotenv
 import asyncio
@@ -11,19 +11,48 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import base64
 from datetime import datetime
+from contextlib import asynccontextmanager
 
 # Load environment variables
 load_dotenv()
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Thread pool for running transcriptions
 executor = ThreadPoolExecutor(max_workers=2)
 
-# Initialize FastAPI app
-app = FastAPI()
+
+# Lifespan context manager for startup/shutdown
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Manage application lifecycle - initialize connections on startup,
+    clean up on shutdown.
+    """
+    logger.info("=" * 60)
+    logger.info("Starting HCI Server...")
+    logger.info("=" * 60)
+    
+    # Startup
+    ai_ready = await initialize_ai_connection()
+    if not ai_ready:
+        logger.warning("⚠ AI connection failed - continuing anyway. Check Ollama.")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Server shutting down...")
+    await shutdown_ai_connection()
+    logger.info("Shutdown complete.")
+
+
+# Initialize FastAPI app with lifespan
+app = FastAPI(lifespan=lifespan)
 
 # Add CORS middleware to allow requests from the web interface
 app.add_middleware(
@@ -35,6 +64,8 @@ app.add_middleware(
 )
 
 
+# ================== DIAGNOSTIC ENDPOINTS ==================
+
 @app.get("/")
 async def root():
     """Health check endpoint"""
@@ -44,7 +75,28 @@ async def root():
 @app.get("/health")
 async def health():
     """Detailed health check"""
-    return {"status": "ok", "server": "running", "progress": get_progress()}
+    from context import get_connection_status
+    
+    status = get_connection_status()
+    return {
+        "status": "ok",
+        "server": "running",
+        "ai_connection": status,
+        "progress": get_progress()
+    }
+
+
+@app.get("/status")
+async def status():
+    """Get comprehensive system status"""
+    from context import get_connection_status
+    
+    ai_status = get_connection_status()
+    return {
+        "server_status": "running",
+        "ai": ai_status,
+        "transcription": get_progress()
+    }
 
 
 @app.get("/progress")
@@ -68,11 +120,13 @@ async def transcribe(file: UploadFile = File(...)):
         if not audio_data:
             raise HTTPException(status_code=400, detail="No audio data provided")
 
-        logger.info(f"Received audio file: {file.filename}")
+        logger.info(f"Received audio file: {file.filename} ({len(audio_data)} bytes, type: {file.content_type})")
 
         # Run transcription in thread pool to avoid blocking
         loop = asyncio.get_event_loop()
         transcript = await loop.run_in_executor(executor, transcribe_audio, audio_data)
+        
+        logger.info(f"✓ Transcription successful: {transcript[:100] if transcript else 'EMPTY'}")
 
         return JSONResponse(
             {"success": True, "transcript": transcript, "filename": file.filename}
@@ -81,7 +135,7 @@ async def transcribe(file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in transcribe endpoint: {str(e)}")
+        logger.error(f"✗ Error in transcribe endpoint: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Transcription error: {str(e)}")
 
 
@@ -169,21 +223,22 @@ async def websocket_endpoint(websocket: WebSocket):
     logger.info("WebSocket connection established")
 
     buffer = ConversationBuffer()
-    ollama_client = get_ollama_client()
+    
+    # Use the persistent AI client initialized at startup
+    ollama_client = get_ai_client()
+    
+    if ollama_client is None:
+        logger.error("AI client not initialized!")
+        await websocket.send_json(
+            {
+                "type": "error",
+                "content": "AI system not ready. Server may still be initializing.",
+            }
+        )
+        await websocket.close()
+        return
 
     try:
-        # Verify Ollama is available
-        is_ready = await ollama_client.verify_model()
-        if not is_ready:
-            await websocket.send_json(
-                {
-                    "type": "error",
-                    "content": "Ollama not available. Please start Ollama and ensure a model is installed.",
-                }
-            )
-            await websocket.close()
-            return
-
         await websocket.send_json(
             {
                 "type": "status",
@@ -199,11 +254,11 @@ async def websocket_endpoint(websocket: WebSocket):
 
             if msg_type == "text":
                 buffer.add_text(content)
-                logger.info(f"Received text: {content}")
+                logger.info(f"Received text: {content[:50]}...")
 
             elif msg_type == "transcript":
                 buffer.add_transcript(content)
-                logger.info(f"Received transcript: {content}")
+                logger.info(f"Received transcript: {content[:50]}...")
 
             elif msg_type == "image":
                 # Decode base64 image
@@ -258,10 +313,10 @@ async def websocket_endpoint(websocket: WebSocket):
                             )
                             full_response += token
 
-                        logger.info(f"Response complete: {full_response[:100]}...")
+                        logger.info(f"✓ Response complete: {full_response[:100]}...")
 
                     except Exception as e:
-                        logger.error(f"Error getting response: {e}")
+                        logger.error(f"✗ Error getting response: {e}", exc_info=True)
                         await websocket.send_json(
                             {"type": "error", "content": f"Model error: {str(e)}"}
                         )
@@ -270,7 +325,7 @@ async def websocket_endpoint(websocket: WebSocket):
             await asyncio.sleep(0.1)
 
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+        logger.error(f"✗ WebSocket error: {e}", exc_info=True)
         try:
             await websocket.send_json(
                 {"type": "error", "content": f"Connection error: {str(e)}"}
