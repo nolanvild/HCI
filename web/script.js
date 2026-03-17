@@ -1,57 +1,127 @@
-/**
- * Real-time AI Agent Interface - Unified Multi-Modal Capture
- * Single button captures image + audio simultaneously
- * Text input combined with media and sent to AI
+﻿/**
+ * HCI AI Interface - Simplified Real-time Chat
+ * Clean WebSocket-based messaging with Ollama integration
  */
 
 // ==================== DOM ELEMENTS ====================
 const messagesContainer = document.getElementById("messagesContainer");
 const textInput = document.getElementById("textInput");
-const captureBtn = document.getElementById("captureBtn");
-const captureStatus = document.getElementById("captureStatus");
+const sendBtn = document.getElementById("sendBtn");
 const connectBtn = document.getElementById("connectBtn");
 const resetBtn = document.getElementById("resetBtn");
+const testBtn = document.getElementById("testBtn");
 const connectionStatus = document.getElementById("connectionStatus");
 const connectionText = document.getElementById("connectionText");
-const loadingIndicator = document.getElementById("loadingIndicator");
-
-const videoPreview = document.getElementById("videoPreview");
-const recordingIndicator = document.getElementById("recordingIndicator");
-const statusText = document.getElementById("statusText");
+const processingIndicator = document.getElementById("processingIndicator");
+const processingTimer = document.getElementById("processingTimer");
+const tokenCount = document.getElementById("tokenCount");
+const deviceMenuBtn = document.getElementById("deviceMenuBtn");
+const deviceMenu = document.getElementById("deviceMenu");
+const cameraSelect = document.getElementById("cameraSelect");
+const microphoneSelect = document.getElementById("microphoneSelect");
+const visionToggle = document.getElementById("visionToggle");
 
 // ==================== STATE ====================
 let ws = null;
 let stream = null;
-let mediaRecorder = null;
-let isRecording = false;
-let audioChunks = [];
-let currentImageData = null;
 let isConnected = false;
-let captureInterval = null;
+let visionEnabled = false;
+let currentImageData = null;
+let processingStartTime = null;
+let processingTimerInterval = null;
+let tokenCountValue = 0;
 
 // ==================== INITIALIZATION ====================
-async function initializeCamera() {
+
+deviceMenuBtn.addEventListener("click", () => {
+  deviceMenu.style.display =
+    deviceMenu.style.display === "none" ? "block" : "none";
+});
+
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".device-selector")) {
+    deviceMenu.style.display = "none";
+  }
+});
+
+visionToggle?.addEventListener("change", (e) => {
+  visionEnabled = e.target.checked;
+  console.log([Vision] + (visionEnabled ? "ENABLED" : "DISABLED"));
+});
+
+window.addEventListener("load", async () => {
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: "user" },
-      audio: false,
-    });
-    videoPreview.srcObject = stream;
-    statusText.textContent = "Ready";
-    captureBtn.disabled = false;
+    await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    await enumerateDevices();
+    await initializeCamera();
   } catch (error) {
-    console.error("Error accessing camera:", error);
-    statusText.textContent = "Error: Camera access denied";
-    captureBtn.disabled = true;
+    console.error("Permission denied:", error);
+    addSystemMessage("Camera/microphone access denied");
+  }
+});
+
+async function enumerateDevices() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const videoDevices = devices.filter((d) => d.kind === "videoinput");
+    const audioDevices = devices.filter((d) => d.kind === "audioinput");
+
+    cameraSelect.innerHTML = "";
+    videoDevices.forEach((device, index) => {
+      const option = document.createElement("option");
+      option.value = device.deviceId;
+      option.textContent = device.label || Camera + (index + 1);
+      cameraSelect.appendChild(option);
+    });
+
+    microphoneSelect.innerHTML = "";
+    audioDevices.forEach((device, index) => {
+      const option = document.createElement("option");
+      option.value = device.deviceId;
+      option.textContent = device.label || Microphone + (index + 1);
+      microphoneSelect.appendChild(option);
+    });
+  } catch (error) {
+    console.error("Error enumerating devices:", error);
   }
 }
 
-window.addEventListener("load", initializeCamera);
+async function initializeCamera() {
+  try {
+    if (stream) {
+      stream.getTracks().forEach((track) => track.stop());
+    }
 
-// ==================== WEBSOCKET MANAGEMENT ====================
+    const constraints = {
+      video: cameraSelect.value
+        ? { deviceId: { exact: cameraSelect.value } }
+        : { facingMode: "user" },
+      audio: false,
+    };
+
+    stream = await navigator.mediaDevices.getUserMedia(constraints);
+    document.getElementById("videoPreview").srcObject = stream;
+  } catch (error) {
+    console.error("Error accessing camera:", error);
+    addSystemMessage("Error: Camera access denied");
+  }
+}
+
+function captureImage() {
+  const canvas = document.createElement("canvas");
+  const video = document.getElementById("videoPreview");
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(video, 0, 0);
+  return canvas.toDataURL("image/jpeg");
+}
+
+// ==================== WEBSOCKET ====================
+
 function connectWebSocket() {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const wsUrl = `${protocol}//${window.location.host}/ws`;
+  const wsUrl = protocol + "//" + window.location.host + "/ws";
 
   ws = new WebSocket(wsUrl);
 
@@ -60,7 +130,7 @@ function connectWebSocket() {
     isConnected = true;
     updateConnectionStatus(true);
     textInput.disabled = false;
-    captureBtn.disabled = false;
+    sendBtn.disabled = false;
     resetBtn.disabled = false;
     connectBtn.textContent = "Disconnect";
     connectBtn.classList.add("connected");
@@ -68,17 +138,45 @@ function connectWebSocket() {
   };
 
   ws.onmessage = (event) => {
+    console.log("[WebSocket] Raw event data:", event.data);
     try {
-      // Handle both JSON and plain text messages
       let data;
       try {
         data = JSON.parse(event.data);
+        console.log("[WebSocket] Parsed JSON:", data);
       } catch (e) {
-        // If not JSON, treat as plain text status message
-        console.warn("Received non-JSON message:", event.data);
+        console.log("[WebSocket] Not JSON, treating as status");
         data = { type: "status", content: event.data };
       }
-      handleWebSocketMessage(data);
+
+      const { type, content } = data;
+      console.log(
+        "[Handler] Processing type: " +
+          type +
+          ", content length: " +
+          String(content).length,
+      );
+
+      switch (type) {
+        case "response":
+          console.log("[Handler] Response token received:", content);
+          addAssistantToken(content);
+          tokenCountValue++;
+          tokenCount.textContent = tokenCountValue;
+          console.log("[Handler] Token count now:", tokenCountValue);
+          break;
+        case "status":
+          console.log("[Handler] Status message:", content);
+          addSystemMessage(content);
+          break;
+        case "error":
+          console.error("[Handler] Error message:", content);
+          hideProcessingIndicator();
+          addSystemMessage("Error: " + content);
+          break;
+        default:
+          console.warn("[Handler] Unknown message type:", type);
+      }
     } catch (error) {
       console.error("Error processing WebSocket message:", error);
     }
@@ -94,7 +192,7 @@ function connectWebSocket() {
     isConnected = false;
     updateConnectionStatus(false);
     textInput.disabled = true;
-    captureBtn.disabled = true;
+    sendBtn.disabled = true;
     resetBtn.disabled = true;
     connectBtn.textContent = "Connect";
     connectBtn.classList.remove("connected");
@@ -127,43 +225,37 @@ function sendWebSocketMessage(type, content) {
 
   try {
     ws.send(JSON.stringify({ type, content }));
+    console.log("[Send] type=" + type + ", length=" + String(content).length);
   } catch (error) {
-    console.error("Error sending WebSocket message:", error);
+    console.error("Error sending message:", error);
   }
 }
 
-function handleWebSocketMessage(data) {
-  const { type, content } = data;
+// ==================== UI ====================
 
-  switch (type) {
-    case "response":
-      // Hide loading indicator on first response
-      hideLoadingIndicator();
-      addAssistantMessageToken(content);
-      break;
-    case "status":
-      addSystemMessage(content);
-      break;
-    case "error":
-      hideLoadingIndicator();
-      addSystemMessage(`Error: ${content}`);
-      break;
-    default:
-      console.warn("Unknown message type:", type);
-  }
-}
+function showProcessingIndicator() {
+  tokenCountValue = 0;
+  tokenCount.textContent = "0";
+  processingStartTime = Date.now();
+  processingIndicator.style.display = "block";
 
-// ==================== LOADING INDICATOR ====================
-function showLoadingIndicator() {
-  loadingIndicator.style.display = "flex";
+  if (processingTimerInterval) clearInterval(processingTimerInterval);
+  processingTimerInterval = setInterval(() => {
+    const elapsed = Math.floor((Date.now() - processingStartTime) / 1000);
+    processingTimer.textContent = elapsed + "s";
+  }, 1000);
+
   scrollToBottom();
 }
 
-function hideLoadingIndicator() {
-  loadingIndicator.style.display = "none";
+function hideProcessingIndicator() {
+  processingIndicator.style.display = "none";
+  if (processingTimerInterval) {
+    clearInterval(processingTimerInterval);
+    processingTimerInterval = null;
+  }
 }
 
-// ==================== MESSAGE DISPLAY ====================
 function addUserMessage(text) {
   const messageDiv = document.createElement("div");
   messageDiv.className = "message user";
@@ -175,21 +267,31 @@ function addUserMessage(text) {
   scrollToBottom();
 }
 
-function addAssistantMessageToken(token) {
+function addAssistantToken(token) {
+  if (tokenCountValue === 0 && token) {
+    hideProcessingIndicator();
+  }
+
   let lastMessage = messagesContainer.lastElementChild;
 
   if (!lastMessage || !lastMessage.classList.contains("assistant")) {
     lastMessage = document.createElement("div");
     lastMessage.className = "message assistant";
     const contentDiv = document.createElement("div");
-    contentDiv.className = "message-content streaming";
-    contentDiv.textContent = "";
+    contentDiv.className = "message-content";
+    const textSpan = document.createElement("span");
+    textSpan.className = "message-text";
+    textSpan.textContent = "";
+    contentDiv.appendChild(textSpan);
     lastMessage.appendChild(contentDiv);
     messagesContainer.appendChild(lastMessage);
   }
 
-  const contentDiv = lastMessage.querySelector(".message-content");
-  contentDiv.textContent += token;
+  const textSpan = lastMessage.querySelector(".message-text");
+  if (textSpan) {
+    textSpan.textContent += token;
+  }
+
   scrollToBottom();
 }
 
@@ -208,172 +310,8 @@ function scrollToBottom() {
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
 
-// ==================== UNIFIED CAPTURE SYSTEM ====================
+// ==================== BUTTON HANDLERS ====================
 
-// Capture image from video
-function captureImage() {
-  const canvas = document.createElement("canvas");
-  canvas.width = videoPreview.videoWidth;
-  canvas.height = videoPreview.videoHeight;
-  const ctx = canvas.getContext("2d");
-  ctx.drawImage(videoPreview, 0, 0);
-  return canvas.toDataURL("image/jpeg");
-}
-
-// Start audio recording
-async function startAudioRecording() {
-  try {
-    const audioStream = await navigator.mediaDevices.getUserMedia({
-      audio: true,
-    });
-    mediaRecorder = new MediaRecorder(audioStream);
-    audioChunks = [];
-
-    mediaRecorder.ondataavailable = (event) => {
-      audioChunks.push(event.data);
-    };
-
-    mediaRecorder.start();
-    isRecording = true;
-    return true;
-  } catch (error) {
-    console.error("Error starting audio recording:", error);
-    statusText.textContent = "Microphone access denied";
-    return false;
-  }
-}
-
-// Stop audio recording and get the blob
-function stopAudioRecording() {
-  return new Promise((resolve) => {
-    if (mediaRecorder && isRecording) {
-      mediaRecorder.onstop = () => {
-        const audioBlob = new Blob(audioChunks, { type: "audio/wav" });
-        isRecording = false;
-        mediaRecorder.stream.getTracks().forEach((track) => track.stop());
-        resolve(audioBlob);
-      };
-      mediaRecorder.stop();
-    } else {
-      resolve(null);
-    }
-  });
-}
-
-// Transcribe audio
-async function transcribeAudio(audioBlob) {
-  try {
-    const formData = new FormData();
-    formData.append("file", audioBlob, "recording.wav");
-
-    const response = await fetch("http://localhost:8000/transcribe", {
-      method: "POST",
-      body: formData,
-    });
-
-    if (!response.ok) {
-      throw new Error("Transcription failed");
-    }
-
-    const data = await response.json();
-    return data.transcript || "";
-  } catch (error) {
-    console.error("Error transcribing audio:", error);
-    return "";
-  }
-}
-
-// UNIFIED CAPTURE BUTTON HANDLER
-captureBtn.addEventListener("click", async () => {
-  if (!isRecording) {
-    // ===== START CAPTURE =====
-    if (!isConnected) {
-      addSystemMessage("Not connected. Please connect first.");
-      return;
-    }
-
-    try {
-      // Start capturing image and audio
-      currentImageData = captureImage();
-      const success = await startAudioRecording();
-
-      if (success) {
-        isRecording = true;
-        captureBtn.textContent = "Stop & Send";
-        captureBtn.classList.add("recording");
-        recordingIndicator.classList.add("active");
-        captureStatus.textContent = "Recording...";
-        statusText.textContent = "Recording - type a message and click Stop";
-        textInput.focus();
-      }
-    } catch (error) {
-      console.error("Error starting capture:", error);
-      statusText.textContent = "Error starting capture";
-    }
-  } else {
-    // ===== STOP CAPTURE & SEND =====
-    captureBtn.disabled = true;
-    captureStatus.textContent = "Processing...";
-
-    try {
-      // Stop audio recording
-      const audioBlob = await stopAudioRecording();
-
-      // Transcribe audio
-      statusText.textContent = "Transcribing...";
-      const transcript = await transcribeAudio(audioBlob);
-
-      // Get text input
-      const textMessage = textInput.value.trim();
-
-      // Combine all inputs
-      let allInputs = [];
-      if (currentImageData) allInputs.push("(image captured)");
-      if (transcript) allInputs.push(`Transcript: ${transcript}`);
-      if (textMessage) allInputs.push(textMessage);
-
-      const combinedMessage = allInputs.join(" ");
-
-      // Send everything to AI
-      if (combinedMessage) {
-        addUserMessage(combinedMessage);
-        showLoadingIndicator();
-
-        // Send image if captured
-        if (currentImageData) {
-          sendWebSocketMessage("image", currentImageData);
-        }
-
-        // Send transcript if available
-        if (transcript) {
-          sendWebSocketMessage("transcript", transcript);
-        }
-
-        // Send text message if available
-        if (textMessage) {
-          sendWebSocketMessage("text", textMessage);
-        }
-      }
-
-      // Reset UI
-      isRecording = false;
-      captureBtn.textContent = "Start Capture";
-      captureBtn.classList.remove("recording");
-      recordingIndicator.classList.remove("active");
-      captureStatus.textContent = "Ready";
-      statusText.textContent = "Ready";
-      textInput.value = "";
-      textInput.focus();
-      captureBtn.disabled = false;
-    } catch (error) {
-      console.error("Error stopping capture:", error);
-      statusText.textContent = "Error processing capture";
-      captureBtn.disabled = false;
-    }
-  }
-});
-
-// ==================== CONNECTION BUTTONS ====================
 connectBtn.addEventListener("click", () => {
   if (isConnected) {
     disconnectWebSocket();
@@ -390,10 +328,71 @@ resetBtn.addEventListener("click", () => {
   }
 });
 
-// Allow Enter key in text input to send (when not capturing)
-textInput.addEventListener("keypress", (e) => {
-  if (e.key === "Enter" && !e.shiftKey && isRecording) {
-    // If capturing, just let them type normally
+testBtn.addEventListener("click", async () => {
+  addSystemMessage("Testing Ollama...");
+  testBtn.disabled = true;
+
+  try {
+    const response = await fetch("http://localhost:8000/test-ollama");
+    const result = await response.json();
+
+    if (result.status === "success") {
+      addSystemMessage(
+        "✅ Ollama test successful!\nModel: " +
+          result.model +
+          "\nTokens: " +
+          result.tokens_count +
+          "\nResponse: " +
+          result.response,
+      );
+    } else {
+      addSystemMessage(
+        "❌ Ollama test failed: " + (result.error || result.message),
+      );
+    }
+  } catch (error) {
+    addSystemMessage("❌ Could not reach server: " + error.message);
+  } finally {
+    testBtn.disabled = false;
+  }
+});
+
+sendBtn.addEventListener("click", async () => {
+  const textMessage = textInput.value.trim();
+
+  if (!textMessage) {
     return;
   }
+
+  if (!isConnected) {
+    addSystemMessage("Not connected. Please connect first.");
+    return;
+  }
+
+  if (visionEnabled) {
+    currentImageData = captureImage();
+  }
+
+  addUserMessage(textMessage);
+  showProcessingIndicator();
+
+  if (visionEnabled && currentImageData) {
+    sendWebSocketMessage("image", currentImageData);
+  }
+
+  sendWebSocketMessage("text", textMessage);
+
+  textInput.value = "";
+  textInput.focus();
+});
+
+textInput.addEventListener("keypress", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendBtn.click();
+  }
+});
+
+cameraSelect.addEventListener("change", () => {
+  initializeCamera();
 });

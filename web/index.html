@@ -13,9 +13,33 @@
       <div class="conversation-panel">
         <div class="panel-header">
           <h1>AI Conversation</h1>
-          <div class="connection-status">
-            <div class="status-indicator" id="connectionStatus"></div>
-            <span id="connectionText">Disconnected</span>
+          <div class="header-controls">
+            <div class="device-selector">
+              <button
+                id="deviceMenuBtn"
+                class="device-menu-btn"
+                title="Select input devices"
+              >
+                ⚙️
+              </button>
+              <div class="device-menu" id="deviceMenu" style="display: none">
+                <div class="device-group">
+                  <label for="cameraSelect">Camera:</label>
+                  <select id="cameraSelect" class="device-dropdown"></select>
+                </div>
+                <div class="device-group">
+                  <label for="microphoneSelect">Microphone:</label>
+                  <select
+                    id="microphoneSelect"
+                    class="device-dropdown"
+                  ></select>
+                </div>
+              </div>
+            </div>
+            <div class="connection-status">
+              <div class="status-indicator" id="connectionStatus"></div>
+              <span id="connectionText">Disconnected</span>
+            </div>
           </div>
         </div>
 
@@ -23,17 +47,9 @@
         <div class="messages-container" id="messagesContainer">
           <div class="message system">
             <div class="message-content">
-              Welcome! Connect to start a conversation. You can type, record audio, and capture images all together.
+              Welcome! Connect to start a conversation. You can type, record
+              audio, and capture images all together.
             </div>
-          </div>
-          <!-- Loading Indicator (hidden by default) -->
-          <div class="loading-indicator" id="loadingIndicator" style="display: none;">
-            <div class="loading-dots">
-              <span></span>
-              <span></span>
-              <span></span>
-            </div>
-            <span class="loading-text">Processing...</span>
           </div>
         </div>
 
@@ -42,22 +58,50 @@
           <!-- Connection Controls -->
           <div class="connection-controls">
             <button id="connectBtn" class="connect-btn">Connect</button>
-            <button id="resetBtn" class="reset-btn" disabled>
-              Reset
+            <button id="resetBtn" class="reset-btn" disabled>Reset</button>
+            <button
+              id="testBtn"
+              class="test-btn"
+              title="Test Ollama connectivity"
+            >
+              🧪 Test Ollama
             </button>
           </div>
 
           <!-- Unified Input -->
           <div class="unified-input-container">
-            <div class="capture-status" id="captureStatus">Ready</div>
             <input
               type="text"
               id="textInput"
               class="text-input"
-              placeholder="Type a message..."
+              placeholder="Type a message or click Send to record audio..."
               disabled
             />
-            <button id="captureBtn" class="capture-btn" disabled>Start Capture</button>
+            <label class="vision-toggle">
+              <input type="checkbox" id="visionToggle" />
+              <span>📸 Vision</span>
+            </label>
+            <button id="sendBtn" class="send-btn" disabled>Send</button>
+          </div>
+        </div>
+
+        <!-- Processing Indicator (hidden by default) -->
+        <div
+          class="processing-indicator"
+          id="processingIndicator"
+          style="display: none"
+        >
+          <div class="processing-header">
+            <span class="processing-title">🤖 AI is thinking...</span>
+            <span class="processing-timer" id="processingTimer">0s</span>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill"></div>
+          </div>
+          <div class="processing-stats">
+            <span class="tokens-count"
+              >Tokens: <span id="tokenCount">0</span></span
+            >
           </div>
         </div>
       </div>
@@ -73,17 +117,6 @@
           </div>
           <div class="status-text" id="statusText">Ready</div>
         </div>
-      </div>
-    </div>
-
-    <!-- Media History Modal (collapsible) -->
-    <div class="media-history" id="mediaHistory">
-      <div class="history-header">
-        <h3>Media History</h3>
-        <button class="toggle-history" id="toggleHistory">►</button>
-      </div>
-      <div class="history-content" id="historyContent" style="display: none">
-        <div id="imagesGrid"></div>
       </div>
     </div>
 

@@ -19,7 +19,11 @@ load_dotenv()
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("server.log", encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
 )
 logger = logging.getLogger(__name__)
 
@@ -37,14 +41,14 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 60)
     logger.info("Starting HCI Server...")
     logger.info("=" * 60)
-    
+
     # Startup
     ai_ready = await initialize_ai_connection()
     if not ai_ready:
         logger.warning("⚠ AI connection failed - continuing anyway. Check Ollama.")
-    
+
     yield
-    
+
     # Shutdown
     logger.info("Server shutting down...")
     await shutdown_ai_connection()
@@ -66,6 +70,7 @@ app.add_middleware(
 
 # ================== DIAGNOSTIC ENDPOINTS ==================
 
+
 @app.get("/")
 async def root():
     """Health check endpoint"""
@@ -76,13 +81,13 @@ async def root():
 async def health():
     """Detailed health check"""
     from context import get_connection_status
-    
+
     status = get_connection_status()
     return {
         "status": "ok",
         "server": "running",
         "ai_connection": status,
-        "progress": get_progress()
+        "progress": get_progress(),
     }
 
 
@@ -90,13 +95,50 @@ async def health():
 async def status():
     """Get comprehensive system status"""
     from context import get_connection_status
-    
+
     ai_status = get_connection_status()
     return {
         "server_status": "running",
         "ai": ai_status,
-        "transcription": get_progress()
+        "transcription": get_progress(),
     }
+
+
+@app.get("/test-ollama")
+async def test_ollama():
+    """Test Ollama connectivity and streaming"""
+    ollama_client = get_ai_client()
+
+    if ollama_client is None:
+        logger.error("AI client not initialized")
+        return {"status": "error", "message": "AI client not initialized"}
+
+    try:
+        logger.info("Testing Ollama connectivity with simple prompt...")
+
+        tokens_received = []
+        async for token in ollama_client.stream_response(
+            prompt="Say 'Hello, I am working!' in one sentence only.",
+            image_data=None,
+            use_history=False,
+        ):
+            tokens_received.append(token)
+            logger.info(f"  Token: {repr(token)}")
+
+        full_response = "".join(tokens_received)
+        return {
+            "status": "success",
+            "model": ollama_client.model,
+            "tokens_count": len(tokens_received),
+            "response": full_response,
+        }
+    except Exception as e:
+        logger.error(f"✗ Ollama test failed: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "error": str(e),
+            "model": ollama_client.model if ollama_client else None,
+        }
 
 
 @app.get("/progress")
@@ -120,13 +162,17 @@ async def transcribe(file: UploadFile = File(...)):
         if not audio_data:
             raise HTTPException(status_code=400, detail="No audio data provided")
 
-        logger.info(f"Received audio file: {file.filename} ({len(audio_data)} bytes, type: {file.content_type})")
+        logger.info(
+            f"Received audio file: {file.filename} ({len(audio_data)} bytes, type: {file.content_type})"
+        )
 
         # Run transcription in thread pool to avoid blocking
         loop = asyncio.get_event_loop()
         transcript = await loop.run_in_executor(executor, transcribe_audio, audio_data)
-        
-        logger.info(f"✓ Transcription successful: {transcript[:100] if transcript else 'EMPTY'}")
+
+        logger.info(
+            f"✓ Transcription successful: {transcript[:100] if transcript else 'EMPTY'}"
+        )
 
         return JSONResponse(
             {"success": True, "transcript": transcript, "filename": file.filename}
@@ -140,93 +186,16 @@ async def transcribe(file: UploadFile = File(...)):
 
 
 # WebSocket for real-time AI interaction
-class ConversationBuffer:
-    """Manages input buffering for continuous conversation."""
-
-    def __init__(self, flush_timeout: float = 2.0, buffer_timeout: float = 1.5):
-        self.buffer = []
-        self.latest_image = None
-        self.flush_timeout = flush_timeout
-        self.buffer_timeout = buffer_timeout
-        self.last_activity = datetime.now()
-
-    def add_text(self, text: str):
-        """Add text to buffer."""
-        if text.strip():
-            self.buffer.append({"type": "text", "content": text})
-            self.last_activity = datetime.now()
-            logger.info(f"Added text to buffer: {text[:50]}...")
-
-    def add_transcript(self, transcript: str):
-        """Add transcribed audio to buffer."""
-        if transcript.strip():
-            self.buffer.append({"type": "transcript", "content": transcript})
-            self.last_activity = datetime.now()
-            logger.info(f"Added transcript: {transcript[:50]}...")
-
-    def set_image(self, image_data: bytes):
-        """Update the latest image."""
-        self.latest_image = image_data
-        self.last_activity = datetime.now()
-        logger.info(f"Updated image (size: {len(image_data)} bytes)")
-
-    def should_flush(self) -> bool:
-        """Check if buffer should be sent to model."""
-        if not self.buffer:
-            return False
-
-        time_since_activity = (datetime.now() - self.last_activity).total_seconds()
-        # Flush if silence for buffer_timeout or if error state
-        return time_since_activity >= self.buffer_timeout
-
-    def get_prompt(self) -> tuple[str, bytes | None]:
-        """Get buffered content as a prompt and return image if available."""
-        if not self.buffer:
-            return "", None
-
-        # Combine all text
-        parts = []
-        for item in self.buffer:
-            if item["type"] in ("text", "transcript"):
-                parts.append(item["content"])
-
-        prompt = " ".join(parts)
-        self.buffer = []  # Clear after getting
-
-        image = self.latest_image
-        return prompt, image
-
-
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """
-    WebSocket endpoint for real-time AI conversation.
-
-    Client should send JSON messages:
-    {
-        "type": "text",           # User typed text
-        "content": "hello"
-    }
-    {
-        "type": "transcript",     # Audio transcription result
-        "content": "what did you say"
-    }
-    {
-        "type": "image",          # Base64 encoded camera frame
-        "content": "data:image/jpeg;base64,..."
-    }
-    {
-        "type": "reset",          # Reset conversation history
-    }
+    Simple WebSocket endpoint for real-time AI conversation.
+    No buffering - processes messages immediately.
     """
     await websocket.accept()
-    logger.info("WebSocket connection established")
+    logger.info("✓ WebSocket connection established")
 
-    buffer = ConversationBuffer()
-    
-    # Use the persistent AI client initialized at startup
     ollama_client = get_ai_client()
-    
     if ollama_client is None:
         logger.error("AI client not initialized!")
         await websocket.send_json(
@@ -238,38 +207,108 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close()
         return
 
-    try:
-        await websocket.send_json(
-            {
-                "type": "status",
-                "content": f"Connected. Using model: {ollama_client.model}",
-            }
-        )
+    # Send connection confirmation
+    await websocket.send_json(
+        {
+            "type": "status",
+            "content": f"Connected. Using model: {ollama_client.model}",
+        }
+    )
+    logger.info(f"✓ Client connected. Ready to receive messages.")
 
-        # Process incoming messages
+    try:
+        # Simple message loop - process each message immediately
         while True:
-            data = await websocket.receive_json()
+            logger.info("🔄 Waiting for message (timeout=1s)...")
+            try:
+                # Wait for next message with short timeout to prevent hanging
+                data = await asyncio.wait_for(websocket.receive_json(), timeout=1.0)
+                logger.info(f"✅ MESSAGE RECEIVED! Data keys: {list(data.keys())}")
+            except asyncio.TimeoutError:
+                # No message received - just continue waiting
+                logger.debug("⏱️ Timeout - no message received")
+                continue
+            except Exception as e:
+                logger.error(f"💥 Error receiving message: {e}", exc_info=True)
+                break
+
             msg_type = data.get("type")
             content = data.get("content", "")
 
+            logger.info(
+                f"📨 WebSocket received: type={msg_type}, content_length={len(str(content))}"
+            )
+
+            # Handle different message types
             if msg_type == "text":
-                buffer.add_text(content)
-                logger.info(f"Received text: {content[:50]}...")
+                logger.info(f"💬 Processing text: {content[:100]}...")
+                logger.info(f"   About to call stream_response...")
+
+                try:
+                    # Stream response directly from Ollama
+                    token_count = 0
+                    full_response = ""
+
+                    logger.info(
+                        f"🤖 Calling Ollama model with prompt: {content[:50]}..."
+                    )
+                    logger.info(f"   ⏳ Starting stream from Ollama...")
+
+                    stream_iterator = ollama_client.stream_response(
+                        prompt=content, image_data=None, use_history=True
+                    )
+                    logger.info(f"   ✓ Stream iterator created")
+
+                    async for token in stream_iterator:
+                        token_count += 1
+                        logger.info(
+                            f"   📥 Token {token_count}: {repr(token[:20] if token else 'EMPTY')}"
+                        )
+                        # Send each token immediately as it arrives
+                        try:
+                            payload = {"type": "response", "content": token}
+                            logger.info(
+                                f"   📤 Sending token {token_count} via WebSocket..."
+                            )
+                            await websocket.send_json(payload)
+                            logger.info(f"   ✅ Token {token_count} sent successfully")
+                        except Exception as e:
+                            logger.error(f"Error sending token {token_count}: {e}")
+                            break
+
+                        full_response += token
+                        if token_count % 5 == 0:
+                            logger.info(f"   📊 Progress: {token_count} tokens sent")
+
+                    logger.info(
+                        f"✅ Response complete: {token_count} tokens total. Content: {full_response[:100]}..."
+                    )
+
+                except Exception as e:
+                    logger.error(f"✗ Error calling Ollama: {e}", exc_info=True)
+                    try:
+                        await websocket.send_json(
+                            {"type": "error", "content": f"Model error: {str(e)}"}
+                        )
+                    except Exception as send_err:
+                        logger.error(f"Failed to send error message: {send_err}")
 
             elif msg_type == "transcript":
-                buffer.add_transcript(content)
-                logger.info(f"Received transcript: {content[:50]}...")
+                logger.info(f"🎙️ Processing transcript: {content[:100]}...")
+                await websocket.send_json(
+                    {
+                        "type": "status",
+                        "content": f"Transcript received: {content[:50]}...",
+                    }
+                )
 
             elif msg_type == "image":
-                # Decode base64 image
+                logger.info(f"🖼️ Processing image...")
                 try:
-                    # Remove data URL prefix if present
                     if content.startswith("data:"):
                         content = content.split(",")[1]
-
                     image_bytes = base64.b64decode(content)
-                    buffer.set_image(image_bytes)
-
+                    logger.info(f"   ✓ Image decoded ({len(image_bytes)} bytes)")
                     await websocket.send_json(
                         {
                             "type": "status",
@@ -283,46 +322,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     )
 
             elif msg_type == "reset":
+                logger.info("🔄 Resetting conversation...")
                 await ollama_client.reset_conversation()
-                buffer.buffer = []
-                buffer.latest_image = None
                 await websocket.send_json(
                     {"type": "status", "content": "Conversation reset"}
                 )
 
-            # Check if should flush buffer and send to model
-            if buffer.should_flush():
-                prompt, image = buffer.get_prompt()
-
-                if prompt.strip():
-                    logger.info(f"Flushing buffer to model: {prompt[:100]}...")
-
-                    await websocket.send_json(
-                        {"type": "status", "content": "Processing..."}
-                    )
-
-                    try:
-                        # Stream response from Ollama
-                        full_response = ""
-                        async for token in ollama_client.stream_response(
-                            prompt=prompt, image_data=image, use_history=True
-                        ):
-                            # Send each token as it arrives
-                            await websocket.send_json(
-                                {"type": "response", "content": token}
-                            )
-                            full_response += token
-
-                        logger.info(f"✓ Response complete: {full_response[:100]}...")
-
-                    except Exception as e:
-                        logger.error(f"✗ Error getting response: {e}", exc_info=True)
-                        await websocket.send_json(
-                            {"type": "error", "content": f"Model error: {str(e)}"}
-                        )
-
-            # Small delay to prevent busy-waiting
-            await asyncio.sleep(0.1)
+            else:
+                logger.warning(f"Unknown message type: {msg_type}")
 
     except Exception as e:
         logger.error(f"✗ WebSocket error: {e}", exc_info=True)
